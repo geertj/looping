@@ -5,8 +5,6 @@ This package contains ``EventLoop`` implementations for various well known
 event loops. The ``EventLoop`` interface is currently being defined in PEP3156
 [1]_ and the "Tulip" project [2]_.
 
-  http://code.google.com/p/tulip/
-
 Curently supported event loops are:
 
  * libuv (via pyuv)
