@@ -10,7 +10,7 @@ from setuptools import setup
 
 version_info = {
     'name': 'looping',
-    'version': '0.1',
+    'version': '0.2.dev',
     'description': 'An EventLoop interface for various event loops',
     'author': 'Geert Jansen',
     'author_email': 'geertj@gmail.com',
@@ -31,5 +31,6 @@ setup(
     package_dir = { '': 'lib' },
     packages = [ 'looping' ],
     install_requires = ['setuptools'],
+    test_suite = 'nose.collector',
     **version_info
 )

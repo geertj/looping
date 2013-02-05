@@ -1,43 +1,45 @@
 #
-# This file was copied from the "tulip" package.
-# See: https://code.google.com/p/tulip/
+# This file is part of looping. Looping is free software available under the
+# terms of the Apache 2.0 license. See the file "LICENSE" that was provided
+# together with this source file for the licensing terms.
+#
+# Copyright (c) 2012-2013 the authors. See the file "AUTHORS" for a complete
+# list.
+
+# This file was taken from the Tulip project.
+# See: https://code.google.com/p/tulip
 
 """Event loop and event loop policy.
 
 Beyond the PEP:
 - Only the main thread has a default event loop.
-- init_event_loop() (re-)initializes the event loop.
 """
 
-__all__ = ['EventLoopPolicy', 'DefaultEventLoopPolicy',
-           'EventLoop', 'Handler',
-           'get_event_loop_policy', 'set_event_loop_policy',
-           'get_event_loop', 'set_event_loop', 'init_event_loop',
-           ]
+from __future__ import absolute_import, print_function
 
+import sys
 import threading
+
+__all__ = ['EventLoopPolicy', 'DefaultEventLoopPolicy',
+           'AbstractEventLoop', 'Handler', 'make_handler',
+           'get_event_loop_policy', 'set_event_loop_policy',
+           'get_event_loop', 'set_event_loop', 'new_event_loop',
+           ]
 
 
 class Handler(object):
     """Object returned by callback registration methods."""
 
-    def __init__(self, when, callback, args, kwds=None):
+    def __init__(self, when, callback, args):
         self._when = when
         self._callback = callback
         self._args = args
-        self._kwds = kwds
         self._cancelled = False
 
     def __repr__(self):
-        if self.kwds:
-            res = 'Handler({}, {}, {}, kwds={})'.format(self._when,
-                                                        self._callback,
-                                                        self._args,
-                                                        self._kwds)
-        else:
-            res = 'Handler({}, {}, {})'.format(self._when,
-                                               self._callback,
-                                               self._args)
+        res = 'Handler({}, {}, {})'.format(self._when,
+                                           self._callback,
+                                           self._args)
         if self._cancelled:
             res += '<cancelled>'
         return res
@@ -53,10 +55,6 @@ class Handler(object):
     @property
     def args(self):
         return self._args
-
-    @property
-    def kwds(self):
-        return self._kwds
 
     @property
     def cancelled(self):
@@ -81,11 +79,25 @@ class Handler(object):
         return self._when == other._when
 
 
-class EventLoop(object):
+def make_handler(when, callback, args):
+    if isinstance(callback, Handler):
+        assert not args
+        assert when is None
+        return callback
+    return Handler(when, callback, args)
+
+
+class AbstractEventLoop(object):
     """Abstract event loop."""
+
+    # TODO: Rename run() -> run_until_idle(), run_forever() -> run().
 
     def run(self):
         """Run the event loop.  Block until there is nothing left to do."""
+        raise NotImplementedError
+
+    def run_forever(self):
+        """Run the event loop.  Block until stop() is called."""
         raise NotImplementedError
 
     def run_once(self, timeout=None):  # NEW!
@@ -117,7 +129,7 @@ class EventLoop(object):
         raise NotImplementedError
 
     def call_repeatedly(self, interval, callback, *args):  # NEW!
-        raise NotImplementdError
+        raise NotImplementedError
 
     def call_soon(self, callback, *args):
         return self.call_later(0, callback, *args)
@@ -130,7 +142,7 @@ class EventLoop(object):
     def wrap_future(self, future):
         raise NotImplementedError
 
-    def run_in_executor(self, executor, function, *args):
+    def run_in_executor(self, executor, callback, *args):
         raise NotImplementedError
 
     # Network I/O methods returning Futures.
@@ -141,12 +153,12 @@ class EventLoop(object):
     def getnameinfo(self, sockaddr, flags=0):
         raise NotImplementedError
 
-    def create_transport(self, protocol_factory, host, port,
-                         family=0, type=0, proto=0, flags=0):
+    def create_connection(self, protocol_factory, host, port,
+                          family=0, proto=0, flags=0):
         raise NotImplementedError
 
     def start_serving(self, protocol_factory, host, port,
-                      family=0, type=0, proto=0, flags=0):
+                      family=0, proto=0, flags=0):
         raise NotImplementedError
 
     # Ready-based callback registration methods.
@@ -186,8 +198,16 @@ class EventLoop(object):
     def sock_accept(self, sock):
         raise NotImplementedError
 
+    # Signal handling.
 
-class EventLoopPolicy:
+    def add_signal_handler(self, sig, callback, *args):
+        raise NotImplementedError
+
+    def remove_signal_handler(self, sig):
+        raise NotImplementedError
+
+
+class EventLoopPolicy(object):
     """Abstract policy for accessing the event loop."""
 
     def get_event_loop(self):
@@ -198,7 +218,7 @@ class EventLoopPolicy:
         """XXX"""
         raise NotImplementedError
 
-    def init_event_loop(self):
+    def new_event_loop(self):
         """XXX"""
         raise NotImplementedError
 
@@ -225,23 +245,22 @@ class DefaultEventLoopPolicy(threading.local, EventLoopPolicy):
         """
         if (self._event_loop is None and
             threading.current_thread().name == 'MainThread'):
-            self.init_event_loop()
+            self._event_loop = self.new_event_loop()
         return self._event_loop
 
     def set_event_loop(self, event_loop):
         """Set the event loop."""
-        assert event_loop is None or isinstance(event_loop, EventLoop)
+        assert event_loop is None or isinstance(event_loop, AbstractEventLoop)
         self._event_loop = event_loop
 
-    def init_event_loop(self):
-        """(Re-)initialize the event loop.
+    def new_event_loop(self):
+        """Create a new event loop.
 
-        This is calls set_event_loop() with a freshly created event
-        loop suitable for the platform.
+        You must call set_event_loop() to make this the current event
+        loop.
         """
-        # TODO: Do something else for Windows.
-        from . import unix_events
-        self.set_event_loop(unix_events.UnixEventLoop())
+        # Looping has no default event loop.
+        raise NotImplementedError
 
 
 # Event loop policy.  The policy itself is always global, even if the
@@ -276,6 +295,6 @@ def set_event_loop(event_loop):
     get_event_loop_policy().set_event_loop(event_loop)
 
 
-def init_event_loop():
+def new_event_loop():
     """XXX"""
-    get_event_loop_policy().init_event_loop()
+    return get_event_loop_policy().new_event_loop()

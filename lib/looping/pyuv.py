@@ -3,182 +3,376 @@
 # terms of the Apache 2.0 license. See the file "LICENSE" that was provided
 # together with this source file for the licensing terms.
 #
-# Copyright (c) 2012 the authors. See the file "AUTHORS" for a complete list.
+# Copyright (c) 2012-2013 the authors. See the file "AUTHORS" for a complete
+# list.
+
+# This file was taken from the Rose project.
+# See: https://github.com/saghul/rose
 
 from __future__ import absolute_import, print_function
 
-from looping import tulip
-import threading
+import collections
+import errno
 import logging
+import pyuv
+import socket
+import sys
 
-
-# Allow this module to be compiled even if pyuv is not installed
 try:
-    import pyuv
-    available = True
+    import signal
 except ImportError:
-    available = False
+    signal = None
+
+from . import events, winsocketpair
 
 
-def call_dcall(dcall):
-    try:
-        if dcall.kwds:
-            dcall.callback(*dcall.args, **dcall.kwds)
+# Errno values indicating the socket isn't ready for I/O just yet.
+_TRYAGAIN = frozenset((errno.EAGAIN, errno.EWOULDBLOCK, errno.EINPROGRESS))
+if sys.platform == 'win32':
+    _TRYAGAIN = frozenset(list(_TRYAGAIN) + [errno.WSAEWOULDBLOCK])
+
+
+class PyUVEventLoop(events.AbstractEventLoop):
+    """An PEP3156 style EventLoop for libuv using pyuv."""
+
+    def __init__(self):
+        super(PyUVEventLoop, self).__init__()
+        self._loop = pyuv.Loop()
+        self._stop = False
+
+        self._fd_map = {}
+        self._signal_handlers = {}
+        self._ready = collections.deque()
+        self._timers = collections.deque()
+
+        self._waker = pyuv.Async(self._loop, lambda h: None)
+        self._waker.unref()
+
+        self._ticker = pyuv.Idle(self._loop)
+        self._ticker.unref()
+
+        self._stop_h = pyuv.Idle(self._loop)
+        self._stop_h.unref()
+
+        self._ready_processor = pyuv.Check(self._loop)
+        self._ready_processor.start(self._process_ready)
+        self._ready_processor.unref()
+
+    def _socketpair(self):
+        if hasattr(socket, 'socketpair'):
+            return socket.socketpair()
         else:
-            dcall.callback(*dcall.args)
-    except Exception:
-        logging.exception('Exception in callback %s %r',
-                           dcall.callback, dcall.args)
+            return winsocketpair.socketpair()
 
+    def run(self):
+        self._stop = False
+        while not self._stop and self._run_once():
+            pass
 
-def poll_callback(handle, events, error):
-    if error:
-        return
-    if events & pyuv.UV_READABLE and handle.reader:
-        call_dcall(handle.reader)
-    if events & pyuv.UV_WRITABLE and handle.writer:
-        call_dcall(handle.writer)
-
-
-class Reader(tulip.DelayedCall):
-    """Use to multiplex a pyuv.Poll into an independent reader
-    and writer."""
-
-    def __init__(self, poll, callback, args, kwds=None):
-        super(Reader, self).__init__(None, None, callback, args, kwds)
-        self.poll = poll
-        self.poll.reader = self
-        self.poll.events |= pyuv.UV_READABLE
-
-    def cancel(self):
-        super(Reader, self).cancel()
-        self.poll.events &= ~pyuv.UV_READABLE
-        if self.poll.events == 0:
-            self.poll.close()
-
-
-class Writer(tulip.DelayedCall):
-    """Use to multiplex a pyuv.Poll into an independent reader
-    and writer."""
-
-    def __init__(self, poll, callback, args, kwds=None):
-        super(Writer, self).__init__(None, None, callback, args, kwds)
-        self.poll = poll
-        self.poll.writer = self
-        self.poll.events |= pyuv.UV_WRITABLE
-
-    def cancel(self):
-        super(Writer, self).cancel()
-        self.poll.events &= ~pyuv.UV_WRITABLE
-        if self.poll.events == 0:
-            self.poll.close()
-
-
-def handle_callback(handle):
-    call_dcall(handle.dcall)
-    if handle.single_shot:
-        handle.close()
-
-
-class Handle(tulip.DelayedCall):
-    """DelayedCall that stores a generic handle.
-
-    Used for Prepare and Timer handles.
-    """
-
-    def __init__(self, handle, callback, args, kwds=None, single_shot=False):
-        super(Handle, self).__init__(None, None, callback, args, kwds)
-        self.handle = handle
-        self.handle.dcall = self
-        self.handle.single_shot = single_shot
-
-    def cancel(self):
-        super(Handle, self).cancel()
-        self.handle.close()
-
-
-class EventLoop(object):
-    """An EventLoop based on libuv (using pyuv)."""
-
-    def __init__(self, loop=None):
-        if not available:
-            raise ImportError('pyuv is not available on this system')
-        self.loop = loop or pyuv.Loop.default_loop()
-        # libuv does not support multiple callbacks per file descriptor.
-        # Therefore we need to keep an map, and we also need to multiplex
-        # readers and writers for the same FD onto one Poll instance.
-        self.fdmap = {}  # { fd: poll, ... }
-
-    def _new_poll(self, fd):
-        poll = pyuv.Poll(self.loop, fd)
-        poll.reader = None
-        poll.writer = None
-        poll.events = 0
-        return poll
-
-    def add_reader(self, fd, callback, *args):
-        poll = self.fdmap.get(fd)
-        if poll and poll.reader:
-            raise ValueError('cannot add multiple readers per fd')
-        elif not poll:
-            poll = self._new_poll(fd)
-            self.fdmap[fd] = poll
-        dcall = Reader(poll, callback, args)
-        poll.start(poll.events, poll_callback)
-        return dcall
-
-    def add_writer(self, fd, callback, *args):
-        poll = self.fdmap.get(fd)
-        if poll and poll.writer:
-            raise ValueError('cannot add multiple writers per fd')
-        elif not poll:
-            poll = self._new_poll(fd)
-            self.fdmap[fd] = poll
-        dcall = Writer(poll, callback, args)
-        poll.start(poll.events, poll_callback)
-        return dcall
-
-    def remove_reader(self, fd):
-        poll = self.fdmap.get(fd)
-        if not poll or not poll.reader:
-            raise ValueError('file descriptor not registered for reading')
-        poll.reader.cancel()
-        if poll.closed:
-            del self.fdmap[fd]
-
-    def remove_writer(self, fd):
-        poll = self.fdmap.get(fd)
-        if not poll or not poll.writer:
-            raise ValueError('file descriptor not registered for writing')
-        poll.writer.cancel()
-        if poll.closed:
-            del self.fdmap[fd]
-
-    def call_soon(self, repeat, callback, *args):
-        prep = pyuv.Prepare(self.loop)
-        dcall = Handle(prep, callback, args, single_shot=not repeat)
-        prep.start(handle_callback)
-        return dcall
-
-    def call_later(self, when, repeat, callback, *args):
-        timer = pyuv.Timer(self.loop)
-        if when >= 10000000:
-            when -= self.loop.now()
-        if when <= 0:
-            raise ValueError('illegal timeout')
-        dcall = Handle(timer, callback, args, single_shot=not repeat)
-        timer.start(handle_callback, when, repeat)
-        return dcall
+    def run_forever(self):
+        handler = self.call_repeatedly(24*3600, lambda: None)
+        try:
+            self.run()
+        finally:
+            handler.cancel()
 
     def run_once(self, timeout=None):
         if timeout is not None:
-            timer = pyuv.Timer(self.loop)
-            def stop_loop(handle):
-                pass
-            timer.start(stop_loop, timeout, 0)
-        self.loop.run_once()
+            timer = pyuv.Timer(self._loop)
+            timer.start(lambda x: None, timeout, 0)
+        self._run_once()
         if timeout is not None:
             timer.close()
 
-    def run(self):
-        self.loop.run()
+    def stop(self):
+        self._stop = True
+        if not self._stop_h.active:
+            self._stop_h.start(lambda h: h.stop())
+
+    def close(self):
+        self._fd_map.clear()
+        self._signal_handlers.clear()
+        self._ready.clear()
+        self._timers.clear()
+
+        self._waker.close()
+        self._ticker.close()
+        self._stop_h.close()
+        self._ready_processor.close()
+
+        def cb(handle):
+            if not handle.closed:
+                handle.close()
+        self._loop.walk(cb)
+        # Run a loop iteration so that close callbacks are called and resources are freed
+        assert not self._loop.run(pyuv.UV_RUN_NOWAIT)
+        self._loop = None
+
+    # Methods returning Handlers for scheduling callbacks.
+
+    def call_later(self, delay, callback, *args):
+        if delay <= 0:
+            return self.call_soon(callback, *args)
+        handler = events.make_handler(None, callback, args)
+        timer = pyuv.Timer(self._loop)
+        timer.handler = handler
+        timer.start(self._timer_cb, delay, 0)
+        self._timers.append(timer)
+        return handler
+
+    def call_repeatedly(self, interval, callback, *args):  # NEW!
+        if interval <= 0:
+            raise ValueError('invalid interval specified: {}'.format(interval))
+        handler = events.make_handler(None, callback, args)
+        timer = pyuv.Timer(self._loop)
+        timer.handler = handler
+        timer.start(self._timer_cb, interval, interval)
+        self._timers.append(timer)
+        return handler
+
+    def call_soon(self, callback, *args):
+        handler = events.make_handler(None, callback, args)
+        self._ready.append(handler)
+        return handler
+
+    def call_soon_threadsafe(self, callback, *args):
+        handler = self.call_soon(callback, *args)
+        self._waker.send()
+        return handler
+
+    # Level-trigered I/O methods.
+    # The add_*() methods return a Handler.
+    # The remove_*() methods return True if something was removed,
+    # False if there was nothing to delete.
+
+    def add_reader(self, fd, callback, *args):
+        handler = events.make_handler(None, callback, args)
+        try:
+            poll_h = self._fd_map[fd]
+        except KeyError:
+            poll_h = self._create_poll_handle(fd)
+            self._fd_map[fd] = poll_h
+        else:
+            poll_h.stop()
+
+        poll_h.pevents |= pyuv.UV_READABLE
+        poll_h.read_handler = handler
+        poll_h.start(poll_h.pevents, self._poll_cb)
+
+        return handler
+
+    def remove_reader(self, fd):
+        try:
+            poll_h = self._fd_map[fd]
+        except KeyError:
+            return False
+        else:
+            poll_h.stop()
+            poll_h.pevents &= ~pyuv.UV_READABLE
+            poll_h.read_handler = None
+            if poll_h.pevents == 0:
+                del self._fd_map[fd]
+                poll_h.close()
+            else:
+                poll_h.start(poll_h.pevents, self._poll_cb)
+            return True
+
+    def add_writer(self, fd, callback, *args):
+        handler = events.make_handler(None, callback, args)
+        try:
+            poll_h = self._fd_map[fd]
+        except KeyError:
+            poll_h = self._create_poll_handle(fd)
+            self._fd_map[fd] = poll_h
+        else:
+            poll_h.stop()
+
+        poll_h.pevents |= pyuv.UV_WRITABLE
+        poll_h.write_handler = handler
+        poll_h.start(poll_h.pevents, self._poll_cb)
+
+        return handler
+
+    def remove_writer(self, fd):
+        try:
+            poll_h = self._fd_map[fd]
+        except KeyError:
+            return False
+        else:
+            poll_h.stop()
+            poll_h.pevents &= ~pyuv.UV_WRITABLE
+            poll_h.write_handler = None
+            if poll_h.pevents == 0:
+                del self._fd_map[fd]
+                poll_h.close()
+            else:
+                poll_h.start(poll_h.pevents, self._poll_cb)
+            return True
+
+    # Signal handling.
+
+    def add_signal_handler(self, sig, callback, *args):
+        self._validate_signal(sig)
+        signal_h = pyuv.Signal(self._loop)
+        handler = events.make_handler(None, callback, args)
+        signal_h.handler = handler
+        try:
+            signal_h.start(self._signal_cb, sig)
+        except Exception as e:
+            signal_h.close()
+            raise RuntimeError(str(e))
+        else:
+            self._signal_handlers[sig] = signal_h
+        return handler
+
+    def remove_signal_handler(self, sig):
+        self._validate_signal(sig)
+        try:
+            signal_h = self._signal_handlers.pop(sig)
+        except KeyError:
+            return False
+        del signal_h.handler
+        signal_h.close()
+        return True
+
+    # Private / internal methods
+
+    def _run_once(self):
+        # Check if there are cancelled timers, if so close the handles
+        self._check_timers()
+
+        # If there is something ready to be run, prevent the loop from blocking for i/o
+        if self._ready:
+            self._ticker.ref()
+            self._ticker.start(lambda x: None)
+
+        return self._loop.run(pyuv.UV_RUN_ONCE) or bool(self._ready)
+
+    def _check_timers(self):
+        for timer in [timer for timer in self._timers if timer.handler.cancelled]:
+            del timer.handler
+            timer.close()
+            self._timers.remove(timer)
+
+    def _timer_cb(self, timer):
+        if timer.handler.cancelled:
+            del timer.handler
+            self._timers.remove(timer)
+            timer.close()
+            return
+        self._ready.append(timer.handler)
+        if not timer.repeat:
+            del timer.handler
+            self._timers.remove(timer)
+            timer.close()
+
+    def _signal_cb(self, signal_h, signum):
+        if signal_h.handler.cancelled:
+            self.remove_signal_handler(signum)
+            return
+        self._ready.append(signal_h.handler)
+
+    def _poll_cb(self, poll_h, events, error):
+        if error is not None:
+            # An error happened, signal both readability and writability and
+            # let the error propagate
+            if poll_h.read_handler is not None:
+                if poll_h.read_handler.cancelled:
+                    self.remove_reader(poll_h.fd)
+                else:
+                    self._ready.append(poll_h.read_handler)
+            if poll_h.write_handler is not None:
+                if poll_h.write_handler.cancelled:
+                    self.remove_writer(poll_h.fd)
+                else:
+                    self._ready.append(poll_h.write_handler)
+            return
+
+        old_events = poll_h.pevents
+        modified = False
+
+        if events & pyuv.UV_READABLE:
+            if poll_h.read_handler is not None:
+                if poll_h.read_handler.cancelled:
+                    self.remove_reader(poll_h.fd)
+                    modified = True
+                else:
+                    self._ready.append(poll_h.read_handler)
+            else:
+                poll_h.pevents &= ~pyuv.UV_READABLE
+        if events & pyuv.UV_WRITABLE:
+            if poll_h.write_handler is not None:
+                if poll_h.write_handler.cancelled:
+                    self.remove_writer(poll_h.fd)
+                    modified = True
+                else:
+                    self._ready.append(poll_h.write_handler)
+            else:
+                poll_h.pevents &= ~pyuv.UV_WRITABLE
+
+        if not modified and old_events != poll_h.pevents:
+            # Rearm the handle
+            poll_h.stop()
+            poll_h.start(poll_h.pevents, self._poll_cb)
+
+    def _process_ready(self, handle):
+        # Stop the ticker in case it was active
+        if self._ticker.active:
+            self._ticker.stop()
+            self._ticker.unref()
+        # This is the only place where callbacks are actually *called*.
+        # All other places just add them to ready.
+        # Note: We run all currently scheduled callbacks, but not any
+        # callbacks scheduled by callbacks run this time around --
+        # they will be run the next time (after another I/O poll).
+        # Use an idiom that is threadsafe without using locks.
+        ntodo = len(self._ready)
+        for i in range(ntodo):
+            handler = self._ready.popleft()
+            if not handler.cancelled:
+                try:
+                    handler.callback(*handler.args)
+                except Exception:
+                    logging.exception('Exception in callback %s %r', handler.callback, handler.args)
+
+    def _create_poll_handle(self, fdobj):
+        fd = self._fileobj_to_fd(fdobj)
+        poll_h = pyuv.Poll(self._loop, fd)
+        poll_h.fd = fd
+        poll_h.pevents = 0
+        poll_h.read_handler = None
+        poll_h.write_handler = None
+        return poll_h
+
+    def _fileobj_to_fd(self, fileobj):
+        """Return a file descriptor from a file object.
+
+        Parameters:
+        fileobj -- file descriptor, or any object with a `fileno()` method
+
+        Returns:
+        corresponding file descriptor
+        """
+        if isinstance(fileobj, int):
+            fd = fileobj
+        else:
+            try:
+                fd = int(fileobj.fileno())
+            except (ValueError, TypeError):
+                raise ValueError("Invalid file object: {!r}".format(fileobj))
+        return fd
+
+    def _validate_signal(self, sig):
+        """Internal helper to validate a signal.
+
+        Raise ValueError if the signal number is invalid or uncatchable.
+        Raise RuntimeError if there is a problem setting up the handler.
+        """
+        if not isinstance(sig, int):
+            raise TypeError('sig must be an int, not {!r}'.format(sig))
+        if signal is None:
+            raise RuntimeError('Signals are not supported')
+        if not (1 <= sig < signal.NSIG):
+            raise ValueError('sig {} out of range(1, {})'.format(sig, signal.NSIG))
+        if sys.platform == 'win32':
+            raise RuntimeError('Signals are not really supported on Windows')

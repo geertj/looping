@@ -1,4 +1,8 @@
+Maintainer of the "looping" package:
+
 - Geert Jansen <geertj@gmail.com>
 
-The file "tulip.py" is taken from tulip. See http://code.google.com/p/tulip/
-for a list of authors.
+This package contains code from Rose, created by Saúl Ibarra Corretgé.
+
+This package also contains code from Tulip, created by Guido van Rossum with
+contributions from Richard Oudkerk and others.
