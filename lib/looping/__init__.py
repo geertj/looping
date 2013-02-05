@@ -5,3 +5,12 @@
 #
 # Copyright (c) 2012-2013 the authors. See the file "AUTHORS" for a complete
 # list.
+
+from __future__ import absolute_import, print_function
+
+try:
+    import pyuv
+except ImportError:
+    pass
+else:
+    from .pyuv import PyUVEventLoop
