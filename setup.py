@@ -11,7 +11,7 @@ from setuptools import setup
 
 version_info = {
     'name': 'looping',
-    'version': '0.2',
+    'version': '0.3.dev',
     'description': 'A PEP3156 interface for various event loops',
     'author': 'Geert Jansen',
     'author_email': 'geertj@gmail.com',
@@ -23,7 +23,7 @@ version_info = {
         'Operating System :: POSIX',
         'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
-        'Programming Language :: Python :: 3.2'
+        'Programming Language :: Python :: 3.2',
         'Programming Language :: Python :: 3.3'
     ]
 }
@@ -31,7 +31,7 @@ version_info = {
 if __name__ == '__main__':
     setup(
         package_dir = {'': 'lib'},
-        packages = ['looping'],
+        packages = ['looping', 'looping.test'],
         install_requires = ['setuptools', 'pyuv>=0.9.6'],
         test_suite = 'nose.collector',
         **version_info
