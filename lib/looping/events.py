@@ -17,36 +17,29 @@ Beyond the PEP:
 
 from __future__ import absolute_import, print_function
 
-import sys
-import threading
-
 __all__ = ['EventLoopPolicy', 'DefaultEventLoopPolicy',
-           'AbstractEventLoop', 'Handler', 'make_handler',
+           'AbstractEventLoop', 'Timer', 'Handler', 'make_handler',
            'get_event_loop_policy', 'set_event_loop_policy',
            'get_event_loop', 'set_event_loop', 'new_event_loop',
            ]
+
+import sys
+import threading
 
 
 class Handler(object):
     """Object returned by callback registration methods."""
 
-    def __init__(self, when, callback, args):
-        self._when = when
+    def __init__(self, callback, args):
         self._callback = callback
         self._args = args
         self._cancelled = False
 
     def __repr__(self):
-        res = 'Handler({}, {}, {})'.format(self._when,
-                                           self._callback,
-                                           self._args)
+        res = 'Handler({}, {})'.format(self._callback, self._args)
         if self._cancelled:
             res += '<cancelled>'
         return res
-
-    @property
-    def when(self):
-        return self._when
 
     @property
     def callback(self):
@@ -63,28 +56,61 @@ class Handler(object):
     def cancel(self):
         self._cancelled = True
 
+
+def make_handler(callback, args):
+    if isinstance(callback, Handler):
+        assert not args
+        return callback
+    return Handler(callback, args)
+
+
+class Timer(Handler):
+    """Object returned by timed callback registration methods."""
+
+    def __init__(self, when, callback, args):
+        assert when is not None
+        super(Timer, self).__init__(callback, args)
+        self._when = when
+
+    def __repr__(self):
+        res = 'Timer({}, {}, {})'.format(self._when,
+                                         self._callback,
+                                         self._args)
+        if self._cancelled:
+            res += '<cancelled>'
+        return res
+
+    @property
+    def when(self):
+        return self._when
+
     def __lt__(self, other):
         return self._when < other._when
 
     def __le__(self, other):
-        return self._when <= other._when
+        if self._when < other._when:
+            return True
+        return self.__eq__(other)
 
     def __gt__(self, other):
         return self._when > other._when
 
     def __ge__(self, other):
-        return self._when >= other._when
+        if self._when > other._when:
+            return True
+        return self.__eq__(other)
 
     def __eq__(self, other):
-        return self._when == other._when
+        if isinstance(other, Timer):
+            return (self._when == other._when and
+                    self._callback == other._callback and
+                    self._args == other._args and
+                    self._cancelled == other._cancelled)
+        return NotImplemented
 
-
-def make_handler(when, callback, args):
-    if isinstance(callback, Handler):
-        assert not args
-        assert when is None
-        return callback
-    return Handler(when, callback, args)
+    def __ne__(self, other):
+        equal = self.__eq__(other)
+        return NotImplemented if equal is NotImplemented else not equal
 
 
 class AbstractEventLoop(object):
@@ -153,12 +179,12 @@ class AbstractEventLoop(object):
     def getnameinfo(self, sockaddr, flags=0):
         raise NotImplementedError
 
-    def create_connection(self, protocol_factory, host, port,
-                          family=0, proto=0, flags=0):
+    def create_connection(self, protocol_factory, host=None, port=None,
+                          family=0, proto=0, flags=0, sock=None):
         raise NotImplementedError
 
-    def start_serving(self, protocol_factory, host, port,
-                      family=0, proto=0, flags=0):
+    def start_serving(self, protocol_factory, host=None, port=None,
+                      family=0, proto=0, flags=0, sock=None):
         raise NotImplementedError
 
     # Ready-based callback registration methods.
@@ -176,12 +202,6 @@ class AbstractEventLoop(object):
         raise NotImplementedError
 
     def remove_writer(self, fd):
-        raise NotImplementedError
-
-    def add_connector(self, fd, callback, *args):
-        raise NotImplementedError
-
-    def remove_connector(self, fd):
         raise NotImplementedError
 
     # Completion based I/O methods returning Futures.
@@ -259,8 +279,9 @@ class DefaultEventLoopPolicy(threading.local, EventLoopPolicy):
         You must call set_event_loop() to make this the current event
         loop.
         """
-        # Looping has no default event loop.
-        raise NotImplementedError
+        import looping
+        if hasattr(looping, 'PyUVEventLoop'):
+            return looping.PyUVEventLoop()
 
 
 # Event loop policy.  The policy itself is always global, even if the

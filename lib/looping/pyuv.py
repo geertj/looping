@@ -39,6 +39,7 @@ class PyUVEventLoop(events.AbstractEventLoop):
         super(PyUVEventLoop, self).__init__()
         self._loop = pyuv.Loop()
         self._stop = False
+        self._last_exc = None
 
         self._fd_map = {}
         self._signal_handlers = {}
@@ -48,15 +49,8 @@ class PyUVEventLoop(events.AbstractEventLoop):
         self._waker = pyuv.Async(self._loop, lambda h: None)
         self._waker.unref()
 
-        self._ticker = pyuv.Idle(self._loop)
-        self._ticker.unref()
-
-        self._stop_h = pyuv.Idle(self._loop)
-        self._stop_h.unref()
-
         self._ready_processor = pyuv.Check(self._loop)
         self._ready_processor.start(self._process_ready)
-        self._ready_processor.unref()
 
     def _socketpair(self):
         if hasattr(socket, 'socketpair'):
@@ -86,8 +80,7 @@ class PyUVEventLoop(events.AbstractEventLoop):
 
     def stop(self):
         self._stop = True
-        if not self._stop_h.active:
-            self._stop_h.start(lambda h: h.stop())
+        self._waker.send()
 
     def close(self):
         self._fd_map.clear()
@@ -96,8 +89,6 @@ class PyUVEventLoop(events.AbstractEventLoop):
         self._timers.clear()
 
         self._waker.close()
-        self._ticker.close()
-        self._stop_h.close()
         self._ready_processor.close()
 
         def cb(handle):
@@ -113,7 +104,7 @@ class PyUVEventLoop(events.AbstractEventLoop):
     def call_later(self, delay, callback, *args):
         if delay <= 0:
             return self.call_soon(callback, *args)
-        handler = events.make_handler(None, callback, args)
+        handler = events.make_handler(callback, args)
         timer = pyuv.Timer(self._loop)
         timer.handler = handler
         timer.start(self._timer_cb, delay, 0)
@@ -123,7 +114,7 @@ class PyUVEventLoop(events.AbstractEventLoop):
     def call_repeatedly(self, interval, callback, *args):  # NEW!
         if interval <= 0:
             raise ValueError('invalid interval specified: {}'.format(interval))
-        handler = events.make_handler(None, callback, args)
+        handler = events.make_handler(callback, args)
         timer = pyuv.Timer(self._loop)
         timer.handler = handler
         timer.start(self._timer_cb, interval, interval)
@@ -131,7 +122,7 @@ class PyUVEventLoop(events.AbstractEventLoop):
         return handler
 
     def call_soon(self, callback, *args):
-        handler = events.make_handler(None, callback, args)
+        handler = events.make_handler(callback, args)
         self._ready.append(handler)
         return handler
 
@@ -146,7 +137,7 @@ class PyUVEventLoop(events.AbstractEventLoop):
     # False if there was nothing to delete.
 
     def add_reader(self, fd, callback, *args):
-        handler = events.make_handler(None, callback, args)
+        handler = events.make_handler(callback, args)
         try:
             poll_h = self._fd_map[fd]
         except KeyError:
@@ -178,7 +169,7 @@ class PyUVEventLoop(events.AbstractEventLoop):
             return True
 
     def add_writer(self, fd, callback, *args):
-        handler = events.make_handler(None, callback, args)
+        handler = events.make_handler(callback, args)
         try:
             poll_h = self._fd_map[fd]
         except KeyError:
@@ -214,7 +205,7 @@ class PyUVEventLoop(events.AbstractEventLoop):
     def add_signal_handler(self, sig, callback, *args):
         self._validate_signal(sig)
         signal_h = pyuv.Signal(self._loop)
-        handler = events.make_handler(None, callback, args)
+        handler = events.make_handler(callback, args)
         signal_h.handler = handler
         try:
             signal_h.start(self._signal_cb, sig)
@@ -239,20 +230,24 @@ class PyUVEventLoop(events.AbstractEventLoop):
 
     def _run_once(self):
         # Check if there are cancelled timers, if so close the handles
-        self._check_timers()
+        for timer in [timer for timer in self._timers if timer.handler.cancelled]:
+            timer.close()
+            self._timers.remove(timer)
+            del timer.handler
 
         # If there is something ready to be run, prevent the loop from blocking for i/o
         if self._ready:
-            self._ticker.ref()
-            self._ticker.start(lambda x: None)
+            self._ready_processor.ref()
+            mode = pyuv.UV_RUN_NOWAIT
+        else:
+            self._ready_processor.unref()
+            mode = pyuv.UV_RUN_ONCE
 
-        return self._loop.run(pyuv.UV_RUN_ONCE) or bool(self._ready)
-
-    def _check_timers(self):
-        for timer in [timer for timer in self._timers if timer.handler.cancelled]:
-            del timer.handler
-            timer.close()
-            self._timers.remove(timer)
+        r = self._loop.run(mode)
+        if self._last_exc is not None:
+            exc, self._last_exc = self._last_exc, None
+            raise exc[1]
+        return r
 
     def _timer_cb(self, timer):
         if timer.handler.cancelled:
@@ -273,17 +268,18 @@ class PyUVEventLoop(events.AbstractEventLoop):
         self._ready.append(signal_h.handler)
 
     def _poll_cb(self, poll_h, events, error):
+        fd = poll_h.fileno()
         if error is not None:
             # An error happened, signal both readability and writability and
             # let the error propagate
             if poll_h.read_handler is not None:
                 if poll_h.read_handler.cancelled:
-                    self.remove_reader(poll_h.fd)
+                    self.remove_reader(fd)
                 else:
                     self._ready.append(poll_h.read_handler)
             if poll_h.write_handler is not None:
                 if poll_h.write_handler.cancelled:
-                    self.remove_writer(poll_h.fd)
+                    self.remove_writer(fd)
                 else:
                     self._ready.append(poll_h.write_handler)
             return
@@ -294,7 +290,7 @@ class PyUVEventLoop(events.AbstractEventLoop):
         if events & pyuv.UV_READABLE:
             if poll_h.read_handler is not None:
                 if poll_h.read_handler.cancelled:
-                    self.remove_reader(poll_h.fd)
+                    self.remove_reader(fd)
                     modified = True
                 else:
                     self._ready.append(poll_h.read_handler)
@@ -303,7 +299,7 @@ class PyUVEventLoop(events.AbstractEventLoop):
         if events & pyuv.UV_WRITABLE:
             if poll_h.write_handler is not None:
                 if poll_h.write_handler.cancelled:
-                    self.remove_writer(poll_h.fd)
+                    self.remove_writer(fd)
                     modified = True
                 else:
                     self._ready.append(poll_h.write_handler)
@@ -316,10 +312,6 @@ class PyUVEventLoop(events.AbstractEventLoop):
             poll_h.start(poll_h.pevents, self._poll_cb)
 
     def _process_ready(self, handle):
-        # Stop the ticker in case it was active
-        if self._ticker.active:
-            self._ticker.stop()
-            self._ticker.unref()
         # This is the only place where callbacks are actually *called*.
         # All other places just add them to ready.
         # Note: We run all currently scheduled callbacks, but not any
@@ -334,11 +326,16 @@ class PyUVEventLoop(events.AbstractEventLoop):
                     handler.callback(*handler.args)
                 except Exception:
                     logging.exception('Exception in callback %s %r', handler.callback, handler.args)
+                except BaseException:
+                    self._last_exc = sys.exc_info()
+                    break
+        if not self._ready:
+            self._ready_processor.unref()
+        else:
+            self._ready_processor.ref()
 
     def _create_poll_handle(self, fdobj):
-        fd = self._fileobj_to_fd(fdobj)
-        poll_h = pyuv.Poll(self._loop, fd)
-        poll_h.fd = fd
+        poll_h = pyuv.Poll(self._loop, self._fileobj_to_fd(fdobj))
         poll_h.pevents = 0
         poll_h.read_handler = None
         poll_h.write_handler = None
