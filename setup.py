@@ -11,14 +11,14 @@ from setuptools import setup
 
 version_info = {
     'name': 'looping',
-    'version': '0.2.dev',
-    'description': 'An EventLoop interface for various event loops',
+    'version': '0.2',
+    'description': 'A PEP3156 interface for various event loops',
     'author': 'Geert Jansen',
     'author_email': 'geertj@gmail.com',
     'url': 'https://github.com/geertj/looping',
     'license': 'Apache 2.0',
     'classifiers': [
-        'Development Status :: 3 - Alpha',
+        'Development Status :: 4 - Beta',
         'License :: OSI Approved :: Apache Software License',
         'Operating System :: POSIX',
         'Programming Language :: Python :: 2.6',
