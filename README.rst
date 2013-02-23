@@ -8,7 +8,6 @@ event loops. The ``EventLoop`` interface is currently being defined in PEP3156
 Curently supported event loops are:
 
 * libuv (via pyuv)
-* libev (via pyev)
 * Qt (via PySide)
 
 This package supports Python 2.6, Python 2.7 and Python 3.2+.
