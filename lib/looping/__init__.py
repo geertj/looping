@@ -14,3 +14,10 @@ except ImportError:
     pass
 else:
     from .pyuv import PyUVEventLoop
+
+try:
+    import PySide
+except ImportError:
+    pass
+else:
+    from .pyside import PySideEventLoop

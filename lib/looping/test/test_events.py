@@ -328,6 +328,21 @@ if hasattr(looping, 'PyUVEventLoop'):
         def create_event_loop(self):
             return looping.PyUVEventLoop()
 
+if hasattr(looping, 'PySideEventLoop'):
+    class PySideEventLoopTests(EventLoopTestsMixin,
+                               test_utils.LogTrackingTestCase):
+        def create_event_loop(self):
+            return looping.PySideEventLoop()
+
+        def test_add_signal_handler(self):
+            pass
+
+        def test_cancel_signal_handler(self):
+            pass
+
+        def test_signal_handling_while_selecting(self):
+            pass
+
 
 class HandlerTests(unittest.TestCase):
 

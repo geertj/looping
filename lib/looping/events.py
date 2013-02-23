@@ -30,10 +30,14 @@ import threading
 class Handler(object):
     """Object returned by callback registration methods."""
 
-    def __init__(self, callback, args):
+    def __init__(self, callback, args, cancel_callback=None):
         self._callback = callback
         self._args = args
         self._cancelled = False
+        self._cancel_callback = cancel_callback
+
+    def __del__(self):
+        self.cancel()
 
     def __repr__(self):
         res = 'Handler({}, {})'.format(self._callback, self._args)
@@ -54,7 +58,18 @@ class Handler(object):
         return self._cancelled
 
     def cancel(self):
+        if self._cancel_callback:
+            self._cancel_callback()
+            self._cancel_callback = None
         self._cancelled = True
+
+    def _get_cancel_callback(self):
+        return self._cancel_callback
+
+    def _set_cancel_callback(self, cancel_callback):
+        self._cancel_callback = cancel_callback
+
+    cancel_callback = property(_get_cancel_callback, _set_cancel_callback)
 
 
 def make_handler(callback, args):
@@ -68,8 +83,8 @@ class Timer(Handler):
     """Object returned by timed callback registration methods."""
 
     def __init__(self, when, callback, args):
-        assert when is not None
         super(Timer, self).__init__(callback, args)
+        assert when is not None
         self._when = when
 
     def __repr__(self):
