@@ -62,7 +62,7 @@ class EventLoopTestsMixin(object):
         self.event_loop.run()
         t1 = time.time()
         self.assertEqual(results, ['hello world'])
-        self.assertTrue(t1-t0 >= 0.09)
+        self.assertTrue(t1-t0 >= 0.08)
 
     def test_call_repeatedly(self):
         results = []
@@ -104,7 +104,7 @@ class EventLoopTestsMixin(object):
         t1 = time.time()
         t.join()
         self.assertEqual(results, ['hello', 'world'])
-        self.assertTrue(t1-t0 >= 0.09)
+        self.assertTrue(t1-t0 >= 0.08)
 
     def test_call_soon_threadsafe_same_thread(self):
         results = []
@@ -133,7 +133,7 @@ class EventLoopTestsMixin(object):
         t1 = time.time()
         t.join()
         self.assertEqual(results, ['hello', 'world'])
-        self.assertTrue(t1-t0 >= 0.09)
+        self.assertTrue(t1-t0 >= 0.08)
 
     def test_reader_callback(self):
         r, w = self.event_loop._socketpair()
