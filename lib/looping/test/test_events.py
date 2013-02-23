@@ -31,7 +31,7 @@ import unittest
 import mock
 
 import looping
-from looping import events
+from looping import events, util
 from looping.test import test_utils
 
 
@@ -142,6 +142,11 @@ class EventLoopTestsMixin(object):
                 # Spurious readiness notifications are possible
                 # at least on Linux -- see man select.
                 return
+            except socket.error as e:
+                # Python 2.x
+                if e.errno in util.TRYAGAIN:
+                    return
+                raise
             if data:
                 bytes_read.append(data)
             else:
@@ -164,6 +169,10 @@ class EventLoopTestsMixin(object):
                 # Spurious readiness notifications are possible
                 # at least on Linux -- see man select.
                 return
+            except socket.error as e:
+                if e.errno in util.TRYAGAIN:
+                    return
+                raise
             if data:
                 bytes_read.append(data)
             else:
@@ -187,6 +196,10 @@ class EventLoopTestsMixin(object):
                 data = r.recv(1024)
             except io.BlockingIOError:
                 return
+            except socket.error as e:
+                if e.errno in util.TRYAGAIN:
+                    return
+                raise
             if data:
                 bytes_read.append(data)
             if sum(len(b) for b in bytes_read) >= 6:

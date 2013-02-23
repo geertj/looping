@@ -26,18 +26,14 @@ except ImportError:
 from . import events, winsocketpair
 
 
-# Errno values indicating the socket isn't ready for I/O just yet.
-_TRYAGAIN = frozenset((errno.EAGAIN, errno.EWOULDBLOCK, errno.EINPROGRESS))
-if sys.platform == 'win32':
-    _TRYAGAIN = frozenset(list(_TRYAGAIN) + [errno.WSAEWOULDBLOCK])
-
-
 class PyUVEventLoop(events.AbstractEventLoop):
-    """An PEP3156 style EventLoop for libuv using pyuv."""
+    """A PEP3156 style EventLoop for libuv using pyuv."""
 
-    def __init__(self):
+    def __init__(self, loop=None):
         super(PyUVEventLoop, self).__init__()
-        self._loop = pyuv.Loop()
+        if loop is None:
+            loop = pyuv.Loop.default_loop()
+        self._loop = loop
         self._stop = False
         self._last_exc = None
 
