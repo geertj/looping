@@ -28,7 +28,10 @@ import sys
 import threading
 import time
 import unittest
-import mock
+try:
+    from unittest import mock
+except ImportError:
+    import mock
 
 import looping
 from looping import events, util
