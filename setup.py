@@ -32,7 +32,7 @@ if __name__ == '__main__':
     setup(
         package_dir = {'': 'lib'},
         packages = ['looping'],
-        install_requires = ['setuptools'],
+        install_requires = ['setuptools', 'pyuv>=0.9.6'],
         test_suite = 'nose.collector',
         **version_info
     )
