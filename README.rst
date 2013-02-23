@@ -16,7 +16,19 @@ The event loops only implement the callback interface, so e.g. ``add_reader()``
 and friends, the ``call_soon()`` timer related functions, and the
 ``add_signal_handler()`` signal related functions. The other parts of the event
 loop interface require ``tulip.Future`` which in turn depends on the ``yield
-from`` statement which is Python 3.3+ only.
+from`` statement. This is Python 3.3+ and is not supported in looping.
+
+Usage
+=====
+
+The ``looping`` package defines two event loops:
+
+* ``PyUVEventLoop``. This loop will be available if the ``pyuv`` package is
+  found.
+* ``PySideEventLoop``. This loop will be avaialble if the ``PySide`` package
+  is found.
+
+You can set a default loop for the current thread using ``set_event_loop()``.
 
 License
 =======
