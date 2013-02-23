@@ -8,16 +8,14 @@
 
 from __future__ import absolute_import, print_function
 
-try:
-    import pyuv
-except ImportError:
-    pass
-else:
-    from .pyuv import PyUVEventLoop
+from .events import *
 
 try:
-    import PySide
+    from .pyuv import PyUVEventLoop
 except ImportError:
     pass
-else:
+
+try:
     from .pyside import PySideEventLoop
+except ImportError:
+    pass
