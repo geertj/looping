@@ -3,7 +3,8 @@
 # terms of the Apache 2.0 license. See the file "LICENSE" that was provided
 # together with this source file for the licensing terms.
 #
-# Copyright (c) 2012 the authors. See the file "AUTHORS" for a complete list.
+# Copyright (c) 2012-2013 the authors. See the file "AUTHORS" for a complete
+# list.
 
 
 from setuptools import setup
@@ -27,10 +28,11 @@ version_info = {
     ]
 }
  
-setup(
-    package_dir = { '': 'lib' },
-    packages = [ 'looping' ],
-    install_requires = ['setuptools'],
-    test_suite = 'nose.collector',
-    **version_info
-)
+if __name__ == '__main__':
+    setup(
+        package_dir = {'': 'lib'},
+        packages = ['looping'],
+        install_requires = ['setuptools'],
+        test_suite = 'nose.collector',
+        **version_info
+    )
